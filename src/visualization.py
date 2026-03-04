@@ -34,7 +34,7 @@ obstacles = prep(MultiPolygon([
 
 ######################################################################
 #
-#   Visualization Class (No Fixes Needed)
+#   Visualization Class
 #
 class Visualization:
     def __init__(self, title=" Visualization"):
@@ -59,10 +59,19 @@ class Visualization:
 
         #estimate pose marker (x_hat, y_hat) and direction arrow.
         self.est_point, = self.ax.plot([], [], marker="o", markersize=6)
-        self.est_heading,  = self.ax.plot([], [], linewidth=2)   # heading line for estimate
+        self.est_heading,  = self.ax.plot([], [], linewidth=2, color='red')   # heading line for estimate
         # True pose marker (optional usage).
         self.true_point, = self.ax.plot([], [], marker="x", markersize=6)
-        self.true_heading, = self.ax.plot([], [], linewidth=2)   # heading line for true
+        self.true_heading, = self.ax.plot([], [], linewidth=2, color='green')   # heading line for true
+        
+        # Robot body true and estimate 
+        self.true_body = plt.Circle((0,0), 0.5, fill=False, color='green')
+        self.ax.add_patch(self.true_body)
+        
+        self.est_body = plt.Circle((0,0), 0.5, fill=False, linestyle="--", color='red')
+        self.ax.add_patch(self.est_body)
+        
+        self.lidar_scatter = self.ax.scatter([], [], s=15, c='red')
         
 
     def redraw(self):
@@ -91,17 +100,76 @@ class Visualization:
 
     def update_estimate(self, x, y, theta):
         self.est_point.set_data([x], [y])
-        L = 3.0
+        self.est_body.center = (x, y)
+        L = 1.0
         x2 = x + L*np.cos(theta)
         y2 = y + L*np.sin(theta)
         self.est_heading.set_data([x, x2], [y, y2])
 
     def update_true(self, x, y, theta):
         self.true_point.set_data([x], [y])
-        L = 3.0
+        self.true_body.center = (x, y)
+        L = 1.0
         x2 = x + L*np.cos(theta)
         y2 = y + L*np.sin(theta)
         self.true_heading.set_data([x, x2], [y, y2])
+        
+    def update_lidar_hits(self, hit_points):
+        if len(hit_points) == 0:
+            self.lidar_scatter.set_offsets(np.empty((0, 2)))
+            return
+
+        pts = np.array(hit_points)
+        self.lidar_scatter.set_offsets(pts)
+
+######################################################################
+#
+#   LIDAR implementation
+#
+def lidar_scan(x, y, theta, num_rays=60, fov=np.pi, max_range=10.0):
+    hits = []
+    start_angle = theta - fov/2
+
+    for i in range(num_rays):
+        angle = start_angle + i * fov / (num_rays - 1)
+
+        x_end = x + max_range*np.cos(angle)
+        y_end = y + max_range*np.sin(angle)
+
+        ray = LineString([(x, y), (x_end, y_end)])
+        intersection = ray.intersection(obstacles.context)
+
+        if intersection.is_empty:
+            continue
+
+        # Collect ALL candidate points
+        candidate_points = []
+
+        if intersection.geom_type == "Point":
+            candidate_points = [(intersection.x, intersection.y)]
+
+        elif intersection.geom_type == "MultiPoint":
+            candidate_points = [(p.x, p.y) for p in intersection.geoms]
+
+        elif intersection.geom_type == "GeometryCollection":
+            for geom in intersection.geoms:
+                if geom.geom_type == "Point":
+                    candidate_points.append((geom.x, geom.y))
+
+        elif intersection.geom_type == "LineString":
+            # If overlapping a wall edge, take closest endpoint
+            coords = list(intersection.coords)
+            candidate_points = [coords[0], coords[-1]]
+
+        if not candidate_points:
+            continue
+
+        # Choose closest hit
+        dists = [dist((x, y), p) for p in candidate_points]
+        hits.append(candidate_points[np.argmin(dists)])
+
+    return hits
+
 
 ######################################################################
 #
@@ -133,6 +201,10 @@ def _demo():
 
         #fake "estimate" as particle mean
         xhat, yhat = particles.mean(axis=0)
+        
+        # LIDAR
+        hits = lidar_scan(x, y, th, num_rays=80, fov=np.pi)
+        viz.update_lidar_hits(hits)
 
         #Update artists
         viz.update_particles(particles)
