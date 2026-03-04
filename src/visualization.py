@@ -210,6 +210,14 @@ def lidar_scan(x, y, theta, num_rays=60, fov=np.pi, max_range=10.0):
 def _demo():
     viz = Visualization() 
 
+    move = {'fwd': 0.0, 'dth': 0.0}
+    def on_key(event):
+        if event.key == 'w':     move['fwd'] =  0.3
+        elif event.key == 's':   move['fwd'] = -0.3
+        elif event.key == 'a':   move['dth'] =  0.05
+        elif event.key == 'd':   move['dth'] = -0.05
+    viz.fig.canvas.mpl_connect('key_press_event', on_key)
+
     time.sleep(5)
 
     #Make some random particles to start near the start state.
@@ -217,6 +225,7 @@ def _demo():
     particles = np.column_stack([
         xstart + 0.75*np.random.randn(N),
         ystart + 0.75*np.random.randn(N),
+        np.random.uniform(-np.pi, np.pi, N)
     ])
 
     #fake "true" motion
@@ -231,27 +240,37 @@ def _demo():
     vyt = 0.005
 
     while True:
-        #Move in a curve
-        th += 0.02
-        x += 0.03*np.cos(th)
-        y += 0.03*np.sin(th)
+        # this is for keyboard movement
+        th += move['dth']
+        nx = x + move['fwd'] * np.cos(th)
+        ny = y + move['fwd'] * np.sin(th)
+        if inFreespace(nx, ny):
+            x, y = nx, ny
+        move_fwd = move['fwd']
+        move_dth = move['dth']
+        move['fwd'] = 0.0
+        move['dth'] = 0.0
 
-        #randomly jitter particles (stand-in for prediction noise)
-        particles += 0.02*np.random.randn(N, 2)
+        particles[:, 0] += move_fwd * np.cos(particles[:, 2]) + 0.05*np.random.randn(N)
+        particles[:, 1] += move_fwd * np.sin(particles[:, 2]) + 0.05*np.random.randn(N)
+        particles[:, 2] += move_dth + 0.01*np.random.randn(N)
+        for i in range(N):
+            if not inFreespace(particles[i, 0], particles[i, 1]):
+                particles[i, 0] = x + 0.5*np.random.randn()
+                particles[i, 1] = y + 0.5*np.random.randn()
 
-        #fake "estimate" as particle mean
-        xhat, yhat = particles.mean(axis=0)
+        xhat, yhat, _ = particles.mean(axis=0)
 
         xt, yt, vxt, vyt = step_target(xt, yt, vxt, vyt, dt=1.0)
         hits = lidar_scan(x, y, th, num_rays=80, fov=np.pi)
 
         #Update artists
-        viz.update_particles(particles)
+        viz.update_particles(particles[:, :2])
         viz.update_true(x, y, th)
         viz.update_estimate(xhat, yhat, th)
         viz.update_target(xt, yt)
         viz.update_lidar_hits(hits)
-        
+
 
         viz.redraw()
 
