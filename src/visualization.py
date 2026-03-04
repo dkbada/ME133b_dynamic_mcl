@@ -31,6 +31,37 @@ obstacles = prep(MultiPolygon([
 
 # Start/goal (x, y)
 (xstart, ystart) = (6, 1)
+# Target location
+(xtarget_start, ytarget_start) = (20, 20)
+
+def inFreespace(x, y):
+    # Boundary check
+    if (x <= xmin or x >= xmax or
+        y <= ymin or y >= ymax):
+        return False
+    point = Point(x, y)
+    # disjoint = NOT intersecting any obstacle
+    return obstacles.disjoint(point)
+
+def step_target(x, y, vx, vy, dt=1.0):
+    xn = x + vx * dt
+    yn = y + vy * dt
+    if inFreespace(xn, yn):
+        return xn, yn, vx, vy
+    # try flipping x only
+    if inFreespace(x - vx * dt, y + vy * dt):
+        vx = -vx
+    # try flipping y only
+    elif inFreespace(x + vx * dt, y - vy * dt):
+        vy = -vy
+    else:
+        vx = -vx
+        vy = -vy
+    xn = x + vx * dt
+    yn = y + vy * dt
+    if not inFreespace(xn, yn):
+        xn, yn = x, y
+    return xn, yn, vx, vy
 
 ######################################################################
 #
@@ -62,15 +93,15 @@ class Visualization:
         self.est_heading,  = self.ax.plot([], [], linewidth=2, color='red')   # heading line for estimate
         # True pose marker (optional usage).
         self.true_point, = self.ax.plot([], [], marker="x", markersize=6)
-        self.true_heading, = self.ax.plot([], [], linewidth=2, color='green')   # heading line for true
-        
-        # Robot body true and estimate 
+        self.true_heading, = self.ax.plot([], [], linewidth=2)   # heading line for true
+        self.target_point, = self.ax.plot([], [], marker=".", markersize=12)
+
+        self.est_heading.set_color('red')
+        self.true_heading.set_color('green')
         self.true_body = plt.Circle((0,0), 0.5, fill=False, color='green')
         self.ax.add_patch(self.true_body)
-        
         self.est_body = plt.Circle((0,0), 0.5, fill=False, linestyle="--", color='red')
         self.ax.add_patch(self.est_body)
-        
         self.lidar_scatter = self.ax.scatter([], [], s=15, c='red')
         
 
@@ -101,7 +132,7 @@ class Visualization:
     def update_estimate(self, x, y, theta):
         self.est_point.set_data([x], [y])
         self.est_body.center = (x, y)
-        L = 1.0
+        L = 3.0
         x2 = x + L*np.cos(theta)
         y2 = y + L*np.sin(theta)
         self.est_heading.set_data([x, x2], [y, y2])
@@ -109,11 +140,14 @@ class Visualization:
     def update_true(self, x, y, theta):
         self.true_point.set_data([x], [y])
         self.true_body.center = (x, y)
-        L = 1.0
+        L = 3.0
         x2 = x + L*np.cos(theta)
         y2 = y + L*np.sin(theta)
         self.true_heading.set_data([x, x2], [y, y2])
-        
+    
+    def update_target(self, x, y):
+        self.target_point.set_data([x], [y])
+    
     def update_lidar_hits(self, hit_points):
         if len(hit_points) == 0:
             self.lidar_scatter.set_offsets(np.empty((0, 2)))
@@ -169,8 +203,6 @@ def lidar_scan(x, y, theta, num_rays=60, fov=np.pi, max_range=10.0):
         hits.append(candidate_points[np.argmin(dists)])
 
     return hits
-
-
 ######################################################################
 #
 #   demo
@@ -190,7 +222,15 @@ def _demo():
     #fake "true" motion
     x, y, th = xstart, ystart, 0.0
 
-    for k in range(600):
+    # initialize the moving target location
+    xt = xtarget_start
+    yt = ytarget_start
+    if not inFreespace(xt, yt):
+        raise ValueError("Target start location is inside obstacle!")
+    vxt = 0.005
+    vyt = 0.005
+
+    while True:
         #Move in a curve
         th += 0.02
         x += 0.03*np.cos(th)
@@ -201,15 +241,17 @@ def _demo():
 
         #fake "estimate" as particle mean
         xhat, yhat = particles.mean(axis=0)
-        
-        # LIDAR
+
+        xt, yt, vxt, vyt = step_target(xt, yt, vxt, vyt, dt=1.0)
         hits = lidar_scan(x, y, th, num_rays=80, fov=np.pi)
-        viz.update_lidar_hits(hits)
 
         #Update artists
         viz.update_particles(particles)
         viz.update_true(x, y, th)
         viz.update_estimate(xhat, yhat, th)
+        viz.update_target(xt, yt)
+        viz.update_lidar_hits(hits)
+        
 
         viz.redraw()
 
