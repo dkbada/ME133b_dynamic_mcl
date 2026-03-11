@@ -256,7 +256,7 @@ def _demo():
         elif event.key == 'd':   move['dth'] = -0.05
     viz.fig.canvas.mpl_connect('key_press_event', on_key)
 
-    time.sleep(5)
+    #time.sleep(5)
 
     #Make some random particles to start near the start state.
     N = 50
@@ -303,7 +303,12 @@ def _demo():
 
         hits = lidar_scan(x, y, th, world_geom, num_rays=80, fov=np.pi)
         true_dists = lidar_distances(x, y, th, world_geom)
-        weights = compute_weights(particles, true_dists, world_geom)
+        
+        #add gaussian noise to simulate real sensor measurements
+        z_real = true_dists + np.random.normal(0, 0.1, size=true_dists.shape)
+        z_real = np.clip(z_real, 0, 10)
+
+        weights = compute_weights(particles, z_real, world_geom)
 
         # Weighted mean for estimate
         xhat = np.average(particles[:, 0], weights=weights)
