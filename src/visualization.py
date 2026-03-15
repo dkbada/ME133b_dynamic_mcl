@@ -37,29 +37,29 @@ def inFreespace(x, y):
     point = Point(x, y)
     return obstacles.disjoint(point)
 
-def step_target(x, y, vx, vy, dt=1.0):
-    xn = x + vx * dt
-    yn = y + vy * dt
-    if inFreespace(xn, yn):
-        return xn, yn, vx, vy
-    if inFreespace(x - vx * dt, y + vy * dt):
-        vx = -vx
-    elif inFreespace(x + vx * dt, y - vy * dt):
-        vy = -vy
-    else:
-        vx = -vx
-        vy = -vy
-    xn = x + vx * dt
-    yn = y + vy * dt
-    if not inFreespace(xn, yn):
-        xn, yn = x, y
-    return xn, yn, vx, vy
+# def step_target(x, y, vx, vy, dt=1.0):
+#     xn = x + vx * dt
+#     yn = y + vy * dt
+#     if inFreespace(xn, yn):
+#         return xn, yn, vx, vy
+#     if inFreespace(x - vx * dt, y + vy * dt):
+#         vx = -vx
+#     elif inFreespace(x + vx * dt, y - vy * dt):
+#         vy = -vy
+#     else:
+#         vx = -vx
+#         vy = -vy
+#     xn = x + vx * dt
+#     yn = y + vy * dt
+#     if not inFreespace(xn, yn):
+#         xn, yn = x, y
+#     return xn, yn, vx, vy
 
-def make_target_poly(xt, yt, r=0.5):
-    return Polygon([
-        (xt - r, yt - r), (xt + r, yt - r),
-        (xt + r, yt + r), (xt - r, yt + r)
-    ])
+# def make_target_poly(xt, yt, r=0.5):
+#     return Polygon([
+#         (xt - r, yt - r), (xt + r, yt - r),
+#         (xt + r, yt + r), (xt - r, yt + r)
+#     ])
 
 ######################################################################
 #
@@ -148,8 +148,8 @@ class Visualization:
         y2 = y + L*np.sin(theta)
         self.true_heading.set_data([x, x2], [y, y2])
 
-    def update_target(self, x, y):
-        self.target_point.set_data([x], [y])
+    # def update_target(self, x, y):
+    #     self.target_point.set_data([x], [y])
 
     def update_lidar_hits(self, hit_points):
         if len(hit_points) == 0:
@@ -166,11 +166,11 @@ class Visualization:
 NUM_RAYS  = 60
 FOV       = 2 * pi
 MAX_RANGE = 36.0
+SIGMA     = 0.4
 
-def _extract_segments(world_geom):
+def build_segment_list(world_geom):
     segs = []
-    geoms = world_geom.geoms if hasattr(world_geom, 'geoms') else [world_geom]
-    for poly in geoms:
+    for poly in world_geom.geoms:
         coords = list(poly.exterior.coords)
         for a, b in zip(coords[:-1], coords[1:]):
             segs.append([a[0], a[1], b[0], b[1]])
@@ -178,70 +178,85 @@ def _extract_segments(world_geom):
     segs.append([xmax, ymin, xmax, ymax])
     segs.append([xmax, ymax, xmin, ymax])
     segs.append([xmin, ymax, xmin, ymin])
-    return np.array(segs, dtype=np.float64)
+    return np.array(segs)
 
-_SEGMENTS = None
-def _get_segments(world_geom):
-    global _SEGMENTS
-    if _SEGMENTS is None:
-        _SEGMENTS = _extract_segments(world_geom)
-    return _SEGMENTS
-
-def _batch_ray_distances(xs, ys, thetas, segs):
-    M = len(xs)
-    S = len(segs)
-    R = NUM_RAYS
-    base_angles = thetas[:, None] - FOV / 2 + np.arange(R) * FOV / (R - 1)
-    dx = np.cos(base_angles)
-    dy = np.sin(base_angles)
-    ox = xs[:, None] * np.ones((1, R))
-    oy = ys[:, None] * np.ones((1, R))
-    x1 = segs[:, 0]; y1 = segs[:, 1]
-    x2 = segs[:, 2]; y2 = segs[:, 3]
-    sx = x2 - x1;    sy = y2 - y1
-    ox3 = ox[:, :, None]; oy3 = oy[:, :, None]
-    dx3 = dx[:, :, None]; dy3 = dy[:, :, None]
-    x13 = x1[None, None, :]; y13 = y1[None, None, :]
-    sx3 = sx[None, None, :]; sy3 = sy[None, None, :]
-    denom = dx3 * sy3 - dy3 * sx3
-    ao_x  = x13 - ox3
-    ao_y  = y13 - oy3
-    with np.errstate(divide='ignore', invalid='ignore'):
-        t = np.where(np.abs(denom) > 1e-10, (ao_x * sy3 - ao_y * sx3) / denom, np.inf)
-        u = np.where(np.abs(denom) > 1e-10, (ao_x * dy3 - ao_y * dx3) / denom, np.inf)
-    valid = (t >= 0) & (t <= MAX_RANGE) & (u >= 0) & (u <= 1)
-    t_hit = np.where(valid, t, np.inf)
-    dists = np.min(t_hit, axis=2)
-    dists = np.where(np.isinf(dists), MAX_RANGE, dists)
-    return dists
-
-def lidar_distances_batch(xs, ys, thetas, world_geom):
-    segs = _get_segments(world_geom)
-    return _batch_ray_distances(np.asarray(xs), np.asarray(ys), np.asarray(thetas), segs)
-
-def lidar_scan(x, y, theta, world_geom, num_rays=60, fov=2*pi, max_range=36.0):
-    dists = lidar_distances_batch([x], [y], [theta], world_geom)[0]
+def lidar_scan(x, y, theta, segs):
     hits = []
-    for i, d in enumerate(dists):
-        if d < MAX_RANGE:
-            angle = theta - FOV/2 + i * FOV / (NUM_RAYS - 1)
-            hits.append((x + d * np.cos(angle), y + d * np.sin(angle)))
+    for i in range(NUM_RAYS):
+        angle = theta - FOV/2 + i * FOV / (NUM_RAYS - 1)
+        dx = np.cos(angle)
+        dy = np.sin(angle)
+        best_t = MAX_RANGE
+        for seg in segs:
+            x1, y1, x2, y2 = seg
+            sx, sy = x2 - x1, y2 - y1
+            denom = dx * sy - dy * sx
+            if abs(denom) < 1e-10:
+                continue
+            ao_x, ao_y = x1 - x, y1 - y
+            t = (ao_x * sy - ao_y * sx) / denom
+            u = (ao_x * dy - ao_y * dx) / denom
+            if 0 <= t <= MAX_RANGE and 0 <= u <= 1:
+                best_t = min(best_t, t)
+        if best_t < MAX_RANGE:
+            hits.append((x + best_t * dx, y + best_t * dy))
     return hits
 
-def lidar_distances(x, y, theta, world_geom, num_rays=60, fov=2*pi, max_range=36.0):
-    return lidar_distances_batch([x], [y], [theta], world_geom)[0]
+def lidar_distances(x, y, theta, segs):
+    dists = []
+    for i in range(NUM_RAYS):
+        angle = theta - FOV/2 + i * FOV / (NUM_RAYS - 1)
+        dx = np.cos(angle)
+        dy = np.sin(angle)
+        best_t = MAX_RANGE
+        for seg in segs:
+            x1, y1, x2, y2 = seg
+            sx, sy = x2 - x1, y2 - y1
+            denom = dx * sy - dy * sx
+            if abs(denom) < 1e-10:
+                continue
+            ao_x, ao_y = x1 - x, y1 - y
+            t = (ao_x * sy - ao_y * sx) / denom
+            u = (ao_x * dy - ao_y * dx) / denom
+            if 0 <= t <= MAX_RANGE and 0 <= u <= 1:
+                best_t = min(best_t, t)
+        dists.append(best_t)
+    return np.array(dists)
 
-SIGMA = 0.4
+def all_particle_lidar_distances(particles, segs):
+    xs = particles[:, 0]
+    ys = particles[:, 1]
+    thetas = particles[:, 2]
 
-def compute_weights(particles, true_dists, world_geom, sigma=0.4, num_rays=60, fov=2*pi, max_range=36.0):
-    N   = len(particles)
-    px  = particles[:, 0]
-    py  = particles[:, 1]
-    pth = particles[:, 2]
-    in_free     = np.array([inFreespace(px[i], py[i]) for i in range(N)])
-    all_dists   = lidar_distances_batch(px, py, pth, world_geom)
-    diff        = true_dists[None, :] - all_dists
-    log_weights = -0.5 * np.sum(diff**2, axis=1) / (SIGMA**2)
+    angles = thetas[:, None] - FOV/2 + np.arange(NUM_RAYS) * FOV / (NUM_RAYS - 1)
+    dx = np.cos(angles)[:, :, None]
+    dy = np.sin(angles)[:, :, None]
+    ox = xs[:, None, None]
+    oy = ys[:, None, None]
+
+    x1 = segs[None, None, :, 0];  y1 = segs[None, None, :, 1]
+    x2 = segs[None, None, :, 2];  y2 = segs[None, None, :, 3]
+    sx = x2 - x1;  sy = y2 - y1
+
+    denom = dx * sy - dy * sx
+    ao_x = x1 - ox
+    ao_y = y1 - oy
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        t = np.where(np.abs(denom) > 1e-10, (ao_x * sy - ao_y * sx) / denom, np.inf)
+        u = np.where(np.abs(denom) > 1e-10, (ao_x * dy - ao_y * dx) / denom, np.inf)
+
+    valid = (t >= 0) & (t <= MAX_RANGE) & (u >= 0) & (u <= 1)
+    t[~valid] = np.inf
+    dists = np.min(t, axis=2)
+    dists[np.isinf(dists)] = MAX_RANGE
+    return dists
+
+def compute_weights(particles, true_dists, segs):
+    in_free = np.array([inFreespace(p[0], p[1]) for p in particles])
+    all_dists = all_particle_lidar_distances(particles, segs)
+    diff = true_dists[None, :] - all_dists
+    log_weights = -0.5 * np.sum(diff**2, axis=1) / SIGMA**2
     log_weights[~in_free] = -1e9
     log_weights -= log_weights.max()
     weights = np.exp(log_weights)
@@ -260,20 +275,20 @@ def random_free_particle():
             return [px, py, np.random.uniform(-pi, pi)]
 
 def resample(particles, weights, N, inject_frac=0.05):
-    n_keep  = N - int(N * inject_frac)
-    cumsum  = np.cumsum(weights)
-    step    = 1.0 / n_keep
-    start   = np.random.uniform(0, step)
-    pos     = start + step * np.arange(n_keep)
+    n_keep = N - int(N * inject_frac)
+    cumsum = np.cumsum(weights)
+    step = 1.0 / n_keep
+    start = np.random.uniform(0, step)
+    pos = start + step * np.arange(n_keep)
     indices = np.clip(np.searchsorted(cumsum, pos), 0, N - 1)
-    kept    = particles[indices].copy()
+    kept = particles[indices].copy()
     injected = np.array([random_free_particle() for _ in range(N - n_keep)])
     return np.vstack([kept, injected])
 
 def motion_update(particles, fwd, dth, alpha=(0.10, 0.04)):
-    N         = len(particles)
+    N = len(particles)
     fwd_noise = alpha[0] * abs(fwd)
-    th_noise  = alpha[1] * abs(dth) + 0.008 * abs(fwd)
+    th_noise = alpha[1] * abs(dth) + 0.008 * abs(fwd)
     particles[:, 2] += dth + th_noise * np.random.randn(N)
     noisy_fwd = fwd + fwd_noise * np.random.randn(N)
     particles[:, 0] += noisy_fwd * np.cos(particles[:, 2])
@@ -297,6 +312,7 @@ def _demo():
 
     x, y, th = float(xstart), float(ystart), 0.0
     world_geom = obstacles.context
+    segs = build_segment_list(world_geom)
 
     while True:
         th += move['dth']
@@ -323,10 +339,10 @@ def _demo():
                 else:
                     particles[i] = random_free_particle()
 
-        hits = lidar_scan(x, y, th, world_geom)
-        true_dists = lidar_distances(x, y, th, world_geom)
+        hits = lidar_scan(x, y, th, segs)
+        true_dists = lidar_distances(x, y, th, segs)
 
-        weights = compute_weights(particles, true_dists, world_geom)
+        weights = compute_weights(particles, true_dists, segs)
 
         N_eff = 1.0 / max(np.sum(weights**2), 1e-300)
         if N_eff < N * 0.3:
