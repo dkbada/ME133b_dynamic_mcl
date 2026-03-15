@@ -28,18 +28,13 @@ obstacles = prep(MultiPolygon([
     Polygon([[17, 11], [23, 11], [23, 8], [21, 8], [21, 5], [20, 5], [20, 2], [17, 2]])
 ]))
 
-# Start/goal (x, y)
 (xstart, ystart) = (6, 1)
-# Target location
-(xtarget_start, ytarget_start) = (20, 20)
 
 def inFreespace(x, y):
-    # Boundary check
     if (x <= xmin or x >= xmax or
         y <= ymin or y >= ymax):
         return False
     point = Point(x, y)
-    # disjoint = NOT intersecting any obstacle
     return obstacles.disjoint(point)
 
 def step_target(x, y, vx, vy, dt=1.0):
@@ -47,10 +42,8 @@ def step_target(x, y, vx, vy, dt=1.0):
     yn = y + vy * dt
     if inFreespace(xn, yn):
         return xn, yn, vx, vy
-    # try flipping x only
     if inFreespace(x - vx * dt, y + vy * dt):
         vx = -vx
-    # try flipping y only
     elif inFreespace(x + vx * dt, y - vy * dt):
         vy = -vy
     else:
@@ -62,7 +55,6 @@ def step_target(x, y, vx, vy, dt=1.0):
         xn, yn = x, y
     return xn, yn, vx, vy
 
-# Makes the target an actualy polygon that reflects lidar
 def make_target_poly(xt, yt, r=0.5):
     return Polygon([
         (xt - r, yt - r), (xt + r, yt - r),
@@ -75,10 +67,8 @@ def make_target_poly(xt, yt, r=0.5):
 #
 class Visualization:
     def __init__(self, title=" Visualization"):
-        #interactive mode
-        plt.ion() 
+        plt.ion()
 
-        # Create a new axes, enable the grid, and set axis limits.
         self.fig, self.ax = plt.subplots()
         self.fig.canvas.manager.set_window_title(title)
         self.ax.grid(True)
@@ -86,20 +76,20 @@ class Visualization:
         self.ax.set_ylim(ymin, ymax)
         self.ax.set_aspect("equal")
 
-        # Show the obstacles.
         for poly in obstacles.context.geoms:
             self.ax.plot(*poly.exterior.xy, 'k-', linewidth=2)
 
-        #stuff that will get updated constantly
-        #populates particles
         self.particles_scatter = self.ax.scatter([], [], s=10, alpha=0.35)
+        self.particles_quiver = self.ax.quiver(
+            np.zeros(1), np.zeros(1), np.zeros(1), np.zeros(1),
+            angles='xy', scale_units='xy', scale=1, width=0.015,
+            headwidth=2, headlength=2, color='steelblue', alpha=0.45, zorder=3
+        )
 
-        #estimate pose marker (x_hat, y_hat) and direction arrow.
         self.est_point, = self.ax.plot([], [], marker="o", markersize=6)
-        self.est_heading,  = self.ax.plot([], [], linewidth=2, color='red')   # heading line for estimate
-        # True pose marker (optional usage).
+        self.est_heading,  = self.ax.plot([], [], linewidth=2, color='red')
         self.true_point, = self.ax.plot([], [], marker="x", markersize=6)
-        self.true_heading, = self.ax.plot([], [], linewidth=2)   # heading line for true
+        self.true_heading, = self.ax.plot([], [], linewidth=2)
         self.target_point, = self.ax.plot([], [], marker=".", markersize=12)
 
         self.est_heading.set_color('red')
@@ -109,7 +99,6 @@ class Visualization:
         self.est_body = plt.Circle((0,0), 0.5, fill=False, linestyle="--", color='red')
         self.ax.add_patch(self.est_body)
         self.lidar_scatter = self.ax.scatter([], [], s=15, c='red')
-        
 
     def redraw(self):
         self.fig.canvas.draw_idle()
@@ -120,11 +109,11 @@ class Visualization:
 #   Update methods
 #
 
-    #particles_xy: (N,2) array of x and y
-    #weights: optional (N,) for alpha/size scaling; if provided, we normalize.
-    def update_particles(self, particles_xy, weights=None):        
-        P = np.asarray(particles_xy, dtype=float)
-        self.particles_scatter.set_offsets(P[:, :2])
+    def update_particles(self, particles, weights=None):
+        P = np.asarray(particles, dtype=float)
+        xy = P[:, :2]
+        th = P[:, 2]
+        self.particles_scatter.set_offsets(xy)
 
         if weights is not None:
             w = np.asarray(weights, dtype=float).reshape(-1)
@@ -134,6 +123,14 @@ class Visualization:
                     w = w / np.max(w)
                 sizes = 10 + 60 * w
                 self.particles_scatter.set_sizes(sizes)
+
+        self.particles_quiver.remove()
+        self.particles_quiver = self.ax.quiver(
+            xy[:, 0], xy[:, 1],
+            0.4 * np.cos(th), 0.4 * np.sin(th),
+            angles='xy', scale_units='xy', scale=1, width=0.015,
+            headwidth=2, headlength=2, color='steelblue', alpha=0.45, zorder=3
+        )
 
     def update_estimate(self, x, y, theta):
         self.est_point.set_data([x], [y])
@@ -150,15 +147,14 @@ class Visualization:
         x2 = x + L*np.cos(theta)
         y2 = y + L*np.sin(theta)
         self.true_heading.set_data([x, x2], [y, y2])
-    
+
     def update_target(self, x, y):
         self.target_point.set_data([x], [y])
-    
+
     def update_lidar_hits(self, hit_points):
         if len(hit_points) == 0:
             self.lidar_scatter.set_offsets(np.empty((0, 2)))
             return
-
         pts = np.array(hit_points)
         self.lidar_scatter.set_offsets(pts)
 
@@ -166,86 +162,126 @@ class Visualization:
 #
 #   LIDAR implementation
 #
-def lidar_scan(x, y, theta, world_geom, num_rays=60, fov=np.pi, max_range=10.0):
+
+NUM_RAYS  = 60
+FOV       = 2 * pi
+MAX_RANGE = 36.0
+
+def _extract_segments(world_geom):
+    segs = []
+    geoms = world_geom.geoms if hasattr(world_geom, 'geoms') else [world_geom]
+    for poly in geoms:
+        coords = list(poly.exterior.coords)
+        for a, b in zip(coords[:-1], coords[1:]):
+            segs.append([a[0], a[1], b[0], b[1]])
+    segs.append([xmin, ymin, xmax, ymin])
+    segs.append([xmax, ymin, xmax, ymax])
+    segs.append([xmax, ymax, xmin, ymax])
+    segs.append([xmin, ymax, xmin, ymin])
+    return np.array(segs, dtype=np.float64)
+
+_SEGMENTS = None
+def _get_segments(world_geom):
+    global _SEGMENTS
+    if _SEGMENTS is None:
+        _SEGMENTS = _extract_segments(world_geom)
+    return _SEGMENTS
+
+def _batch_ray_distances(xs, ys, thetas, segs):
+    M = len(xs)
+    S = len(segs)
+    R = NUM_RAYS
+    base_angles = thetas[:, None] - FOV / 2 + np.arange(R) * FOV / (R - 1)
+    dx = np.cos(base_angles)
+    dy = np.sin(base_angles)
+    ox = xs[:, None] * np.ones((1, R))
+    oy = ys[:, None] * np.ones((1, R))
+    x1 = segs[:, 0]; y1 = segs[:, 1]
+    x2 = segs[:, 2]; y2 = segs[:, 3]
+    sx = x2 - x1;    sy = y2 - y1
+    ox3 = ox[:, :, None]; oy3 = oy[:, :, None]
+    dx3 = dx[:, :, None]; dy3 = dy[:, :, None]
+    x13 = x1[None, None, :]; y13 = y1[None, None, :]
+    sx3 = sx[None, None, :]; sy3 = sy[None, None, :]
+    denom = dx3 * sy3 - dy3 * sx3
+    ao_x  = x13 - ox3
+    ao_y  = y13 - oy3
+    with np.errstate(divide='ignore', invalid='ignore'):
+        t = np.where(np.abs(denom) > 1e-10, (ao_x * sy3 - ao_y * sx3) / denom, np.inf)
+        u = np.where(np.abs(denom) > 1e-10, (ao_x * dy3 - ao_y * dx3) / denom, np.inf)
+    valid = (t >= 0) & (t <= MAX_RANGE) & (u >= 0) & (u <= 1)
+    t_hit = np.where(valid, t, np.inf)
+    dists = np.min(t_hit, axis=2)
+    dists = np.where(np.isinf(dists), MAX_RANGE, dists)
+    return dists
+
+def lidar_distances_batch(xs, ys, thetas, world_geom):
+    segs = _get_segments(world_geom)
+    return _batch_ray_distances(np.asarray(xs), np.asarray(ys), np.asarray(thetas), segs)
+
+def lidar_scan(x, y, theta, world_geom, num_rays=60, fov=2*pi, max_range=36.0):
+    dists = lidar_distances_batch([x], [y], [theta], world_geom)[0]
     hits = []
-    start_angle = theta - fov/2
-
-    for i in range(num_rays):
-        angle = start_angle + i * fov / (num_rays - 1)
-
-        x_end = x + max_range*np.cos(angle)
-        y_end = y + max_range*np.sin(angle)
-
-        ray = LineString([(x, y), (x_end, y_end)])
-        intersection = ray.intersection(world_geom)
-
-        if intersection.is_empty:
-            continue
-
-        # Collect ALL candidate points
-        candidate_points = []
-
-        if intersection.geom_type == "Point":
-            candidate_points = [(intersection.x, intersection.y)]
-
-        elif intersection.geom_type == "MultiPoint":
-            candidate_points = [(p.x, p.y) for p in intersection.geoms]
-
-        elif intersection.geom_type == "GeometryCollection":
-            for geom in intersection.geoms:
-                if geom.geom_type == "Point":
-                    candidate_points.append((geom.x, geom.y))
-
-        elif intersection.geom_type == "LineString":
-            # If overlapping a wall edge, take closest endpoint
-            coords = list(intersection.coords)
-            candidate_points = [coords[0], coords[-1]]
-
-        if not candidate_points:
-            continue
-
-        # Choose closest hit
-        dists = [dist((x, y), p) for p in candidate_points]
-        hits.append(candidate_points[np.argmin(dists)])
-
+    for i, d in enumerate(dists):
+        if d < MAX_RANGE:
+            angle = theta - FOV/2 + i * FOV / (NUM_RAYS - 1)
+            hits.append((x + d * np.cos(angle), y + d * np.sin(angle)))
     return hits
 
-# This returns an array of the distances for each ray
-def lidar_distances(x, y, theta, world_geom, num_rays=80, fov=np.pi, max_range=10):
-    """Returns array of distances (max_range if no hit) for each ray."""
-    start_angle = theta - fov / 2
-    dists = []
-    for i in range(num_rays):
-        angle = start_angle + i * fov / (num_rays - 1)
-        x_end = x + max_range * np.cos(angle)
-        y_end = y + max_range * np.sin(angle)
-        ray = LineString([(x, y), (x_end, y_end)])
-        intersection = ray.intersection(world_geom)
-        if intersection.is_empty:
-            dists.append(max_range)
-        else:
-            dists.append(dist((x, y), (intersection.centroid.x, intersection.centroid.y)))
-    return np.array(dists)
+def lidar_distances(x, y, theta, world_geom, num_rays=60, fov=2*pi, max_range=36.0):
+    return lidar_distances_batch([x], [y], [theta], world_geom)[0]
 
-# Added the gaussian to the weight for each particle
-def compute_weights(particles, true_dists, world_geom, sigma=0.5, num_rays=80, fov=np.pi, max_range=10):
-    N = len(particles)
-    weights = np.ones(N)
-    for i, (px, py, pth) in enumerate(particles):
-        if not inFreespace(px, py):
-            weights[i] = 1e-300
-            continue
-        p_dists = lidar_distances(px, py, pth, world_geom, num_rays=num_rays, fov=fov, max_range=max_range)
-        diff = true_dists - p_dists
-        weights[i] = np.exp(-0.5 * np.sum(diff**2) / sigma**2)
+SIGMA = 0.4
+
+def compute_weights(particles, true_dists, world_geom, sigma=0.4, num_rays=60, fov=2*pi, max_range=36.0):
+    N   = len(particles)
+    px  = particles[:, 0]
+    py  = particles[:, 1]
+    pth = particles[:, 2]
+    in_free     = np.array([inFreespace(px[i], py[i]) for i in range(N)])
+    all_dists   = lidar_distances_batch(px, py, pth, world_geom)
+    diff        = true_dists[None, :] - all_dists
+    log_weights = -0.5 * np.sum(diff**2, axis=1) / (SIGMA**2)
+    log_weights[~in_free] = -1e9
+    log_weights -= log_weights.max()
+    weights = np.exp(log_weights)
     weights /= weights.sum()
     return weights
+
 ######################################################################
 #
 #   demo
 #
+def random_free_particle():
+    while True:
+        px = np.random.uniform(xmin + 0.5, xmax - 0.5)
+        py = np.random.uniform(ymin + 0.5, ymax - 0.5)
+        if inFreespace(px, py):
+            return [px, py, np.random.uniform(-pi, pi)]
+
+def resample(particles, weights, N, inject_frac=0.05):
+    n_keep  = N - int(N * inject_frac)
+    cumsum  = np.cumsum(weights)
+    step    = 1.0 / n_keep
+    start   = np.random.uniform(0, step)
+    pos     = start + step * np.arange(n_keep)
+    indices = np.clip(np.searchsorted(cumsum, pos), 0, N - 1)
+    kept    = particles[indices].copy()
+    injected = np.array([random_free_particle() for _ in range(N - n_keep)])
+    return np.vstack([kept, injected])
+
+def motion_update(particles, fwd, dth, alpha=(0.10, 0.04)):
+    N         = len(particles)
+    fwd_noise = alpha[0] * abs(fwd)
+    th_noise  = alpha[1] * abs(dth) + 0.008 * abs(fwd)
+    particles[:, 2] += dth + th_noise * np.random.randn(N)
+    noisy_fwd = fwd + fwd_noise * np.random.randn(N)
+    particles[:, 0] += noisy_fwd * np.cos(particles[:, 2])
+    particles[:, 1] += noisy_fwd * np.sin(particles[:, 2])
+    return particles
+
 def _demo():
-    viz = Visualization() 
+    viz = Visualization()
 
     move = {'fwd': 0.0, 'dth': 0.0}
     def on_key(event):
@@ -255,30 +291,14 @@ def _demo():
         elif event.key == 'd':   move['dth'] = -0.05
     viz.fig.canvas.mpl_connect('key_press_event', on_key)
 
-    #time.sleep(5)
-
-    #Make some random particles to start near the start state.
-    N = 50
-    particles = np.column_stack([
-        xstart + 0.75*np.random.randn(N),
-        ystart + 0.75*np.random.randn(N),
-        np.random.uniform(-np.pi, np.pi, N)
-    ])
-
+    N = 500
+    particles = np.array([random_free_particle() for _ in range(N)])
     weights = np.ones(N) / N
-    #fake "true" motion
-    x, y, th = xstart, ystart, 0.0
 
-    # initialize the moving target location
-    xt = xtarget_start
-    yt = ytarget_start
-    if not inFreespace(xt, yt):
-        raise ValueError("Target start location is inside obstacle!")
-    vxt = 0.005
-    vyt = 0.005
+    x, y, th = float(xstart), float(ystart), 0.0
+    world_geom = obstacles.context
 
     while True:
-        # this is for keyboard movement
         th += move['dth']
         nx = x + move['fwd'] * np.cos(th)
         ny = y + move['fwd'] * np.sin(th)
@@ -289,48 +309,48 @@ def _demo():
         move['fwd'] = 0.0
         move['dth'] = 0.0
 
-        particles[:, 0] += move_fwd * np.cos(particles[:, 2]) + 0.05*np.random.randn(N)
-        particles[:, 1] += move_fwd * np.sin(particles[:, 2]) + 0.05*np.random.randn(N)
-        particles[:, 2] += move_dth + 0.01*np.random.randn(N)
+        particles = motion_update(particles, move_fwd, move_dth)
+
         for i in range(N):
             if not inFreespace(particles[i, 0], particles[i, 1]):
-                particles[i, 0] = x + 0.5*np.random.randn()
-                particles[i, 1] = y + 0.5*np.random.randn()
-        
-        target_poly = make_target_poly(xt, yt)
-        world_geom = obstacles.context.union(target_poly)
+                for _ in range(5):
+                    cx = particles[i, 0] + 0.4 * np.random.randn()
+                    cy = particles[i, 1] + 0.4 * np.random.randn()
+                    if inFreespace(cx, cy):
+                        particles[i, 0] = cx
+                        particles[i, 1] = cy
+                        break
+                else:
+                    particles[i] = random_free_particle()
 
-        hits = lidar_scan(x, y, th, world_geom, num_rays=80, fov=np.pi)
+        hits = lidar_scan(x, y, th, world_geom)
         true_dists = lidar_distances(x, y, th, world_geom)
-        
-        #add gaussian noise to simulate real sensor measurements
-        z_real = true_dists + np.random.normal(0, 0.1, size=true_dists.shape)
-        z_real = np.clip(z_real, 0, 10)
 
-        weights = compute_weights(particles, z_real, world_geom)
+        weights = compute_weights(particles, true_dists, world_geom)
 
-        # Weighted mean for estimate
-        xhat = np.average(particles[:, 0], weights=weights)
-        yhat = np.average(particles[:, 1], weights=weights)
-        that = np.average(particles[:, 2], weights=weights)
+        N_eff = 1.0 / max(np.sum(weights**2), 1e-300)
+        if N_eff < N * 0.3:
+            xhat = np.average(particles[:, 0], weights=weights)
+            yhat = np.average(particles[:, 1], weights=weights)
+            that = np.arctan2(
+                np.average(np.sin(particles[:, 2]), weights=weights),
+                np.average(np.cos(particles[:, 2]), weights=weights))
+        else:
+            best = np.argmax(weights)
+            xhat, yhat, that = particles[best]
 
-        # Resample
-        indices = np.random.choice(N, size=N, replace=True, p=weights)
-        particles = particles[indices]
+        particles = resample(particles, weights, N, inject_frac=0.05)
 
-        xt, yt, vxt, vyt = step_target(xt, yt, vxt, vyt, dt=1.0)
+        particles[:, 0] += 0.03 * np.random.randn(N)
+        particles[:, 1] += 0.03 * np.random.randn(N)
+        particles[:, 2] += 0.01 * np.random.randn(N)
 
-        #Update artists
-        viz.update_particles(particles[:, :2], weights)
+        viz.update_particles(particles, weights)
         viz.update_true(x, y, th)
         viz.update_estimate(xhat, yhat, that)
-        viz.update_target(xt, yt)
         viz.update_lidar_hits(hits)
-
-
         viz.redraw()
 
-    # Keep window alive if run as script
     plt.ioff()
     plt.show()
 
