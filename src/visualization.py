@@ -17,18 +17,43 @@ from shapely.prepared   import prep
 (xmin, xmax) = (0, 25)
 (ymin, ymax) = (0, 25)
 
+
+# CHOOSE MAP!!!! (uncomment the one you want to choose)
+
+#varied obstacles
+# obstacles = prep(MultiPolygon([
+#     Polygon([[2, 14], [5, 14], [5, 23], [2, 23]]),
+#     Polygon([[7, 23], [11, 23], [11, 20], [7, 20]]),
+#     Polygon([[7, 17], [11, 17], [11, 14], [7, 14]]),
+#     Polygon([[14, 23], [19, 23], [19, 20], [16, 20], [16, 14], [14, 14]]),
+#     Polygon([[21, 23], [23, 23], [23, 14], [18, 14], [18, 17], [21, 17]]),
+#     Polygon([[2, 11], [8, 11], [8, 8], [6, 8], [6, 2], [4, 2], [4, 8], [2, 8]]),
+#     Polygon([[10, 11], [15, 11], [15, 8], [12, 8], [12, 5], [15, 5], [15, 2], [10, 2]]),
+#     Polygon([[17, 11], [23, 11], [23, 8], [21, 8], [21, 5], [20, 5], [20, 2], [17, 2]])
+# ]))
+
+#long hallways
 obstacles = prep(MultiPolygon([
-    Polygon([[2, 14], [5, 14], [5, 23], [2, 23]]),
-    Polygon([[7, 23], [11, 23], [11, 20], [7, 20]]),
-    Polygon([[7, 17], [11, 17], [11, 14], [7, 14]]),
-    Polygon([[14, 23], [19, 23], [19, 20], [16, 20], [16, 14], [14, 14]]),
-    Polygon([[21, 23], [23, 23], [23, 14], [18, 14], [18, 17], [21, 17]]),
-    Polygon([[2, 11], [8, 11], [8, 8], [6, 8], [6, 2], [4, 2], [4, 8], [2, 8]]),
-    Polygon([[10, 11], [15, 11], [15, 8], [12, 8], [12, 5], [15, 5], [15, 2], [10, 2]]),
-    Polygon([[17, 11], [23, 11], [23, 8], [21, 8], [21, 5], [20, 5], [20, 2], [17, 2]])
+    Polygon([[2, 23], [23, 23], [23, 20], [2, 20]]),
+    Polygon([[2, 17], [23, 17], [23, 14], [2, 14]]),
+    Polygon([[2, 11], [23, 11], [23, 8], [2, 8]]),
+    Polygon([[2, 5], [23, 5], [23, 2], [2, 2]])
 ]))
 
-(xstart, ystart) = (6, 1)
+#circle
+# center_coords = (12.5, 12.5)
+# radius = 10.0
+# center_point = Point(center_coords)
+# obstacles = prep(MultiPolygon([center_point.buffer(radius)]))
+
+#hexagon
+# obstacles = prep(MultiPolygon([
+#     Polygon([[7, 4], [18, 4], [22, 12], [18, 21], [7, 21], [3, 12]])
+# ]))
+
+
+# Start
+(xstart, ystart) = (1, 1)
 
 def inFreespace(x, y):
     if (x <= xmin or x >= xmax or
@@ -252,15 +277,19 @@ def all_particle_lidar_distances(particles, segs):
     dists[np.isinf(dists)] = MAX_RANGE
     return dists
 
-def compute_weights(particles, true_dists, segs):
+def compute_weights(particles, z_real, segs):
     in_free = np.array([inFreespace(p[0], p[1]) for p in particles])
     all_dists = all_particle_lidar_distances(particles, segs)
-    diff = true_dists[None, :] - all_dists
+    diff = z_real[None, :] - all_dists
     log_weights = -0.5 * np.sum(diff**2, axis=1) / SIGMA**2
     log_weights[~in_free] = -1e9
     log_weights -= log_weights.max()
     weights = np.exp(log_weights)
-    weights /= weights.sum()
+    total = weights.sum()
+    if total <= 1e-300 or not np.isfinite(total):
+        weights = np.ones(len(particles))/len(particles)
+    else:
+        weights /= total
     return weights
 
 ######################################################################
@@ -342,24 +371,25 @@ def _demo():
         hits = lidar_scan(x, y, th, segs)
         true_dists = lidar_distances(x, y, th, segs)
 
-        weights = compute_weights(particles, true_dists, segs)
+        z_real = true_dists + np.random.randn(NUM_RAYS) * SIGMA
+        z_real = np.clip(z_real, 0.0, MAX_RANGE)
+
+        weights = compute_weights(particles, z_real, segs)
 
         N_eff = 1.0 / max(np.sum(weights**2), 1e-300)
-        if N_eff < N * 0.3:
-            xhat = np.average(particles[:, 0], weights=weights)
-            yhat = np.average(particles[:, 1], weights=weights)
-            that = np.arctan2(
-                np.average(np.sin(particles[:, 2]), weights=weights),
-                np.average(np.cos(particles[:, 2]), weights=weights))
-        else:
-            best = np.argmax(weights)
-            xhat, yhat, that = particles[best]
+        xhat = np.average(particles[:, 0], weights=weights)
+        yhat = np.average(particles[:, 1], weights=weights)
+        that = np.arctan2(
+            np.average(np.sin(particles[:, 2]), weights=weights),
+            np.average(np.cos(particles[:, 2]), weights=weights))
+        
+        if N_eff < N * 0.5:
+            particles = resample(particles, weights, N, inject_frac=0.05)
 
-        particles = resample(particles, weights, N, inject_frac=0.05)
-
-        particles[:, 0] += 0.03 * np.random.randn(N)
-        particles[:, 1] += 0.03 * np.random.randn(N)
-        particles[:, 2] += 0.01 * np.random.randn(N)
+            particles[:, 0] += 0.03 * np.random.randn(N)
+            particles[:, 1] += 0.03 * np.random.randn(N)
+            particles[:, 2] += 0.01 * np.random.randn(N)
+            weights = np.ones(N) / N
 
         viz.update_particles(particles, weights)
         viz.update_true(x, y, th)
