@@ -47,9 +47,9 @@ obstacles = prep(MultiPolygon([
 # obstacles = prep(MultiPolygon([center_point.buffer(radius)]))
 
 #hexagon
-# obstacles = prep(MultiPolygon([
-#     Polygon([[7, 4], [18, 4], [22, 12], [18, 21], [7, 21], [3, 12]])
-# ]))
+obstacles = prep(MultiPolygon([
+     Polygon([[7, 4], [18, 4], [22, 12], [18, 21], [7, 21], [3, 12]])
+]))
 
 
 # Start

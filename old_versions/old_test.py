@@ -87,7 +87,7 @@ ALPHA_FWD    = 0.05
 ALPHA_ROT    = 0.01
 
 # --- Sensor noise ---
-LIDAR_SIGMA  = 0.1
+LIDAR_SIGMA  = 2.0
 
 # --- Filter ---
 N            = 700   # more particles = visible cloud + better coverage
@@ -659,8 +659,9 @@ def _demo():
             # Particles compare against the static map only — moving
             # obstacles appear as unexplained short-range returns, causing
             # a transient ESS drop that recovers once the obs moves away.
-            weights    = compute_weights(particles, z_measured,
-                                         world_geom_particles)
+            """weights    = compute_weights(particles, z_measured,
+                                         world_geom_particles)"""
+            weights = np.zeros(len(particles))
 
         # ── STEP 3: RESAMPLE ───────────────────────────────────────────
         Neff = 1.0 / np.sum(weights**2)
